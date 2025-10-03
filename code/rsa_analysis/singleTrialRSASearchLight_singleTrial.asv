@@ -1,0 +1,236 @@
+function singleTrialRSASearchLight_singleTrial(subj)
+% load the concatenated single trial/miniblock data and calculate distances
+% between miniblock pairs
+%just does cued for now -- add option later to do uncued as well
+
+% set the data path
+% data_path = '/gpfs/data/dbadre/avaidya4/restaurantTask_fMRI_trial/';
+data_path = '/gpfs/data/mnassar/lyu21/GridPlanet/';
+
+% roi path
+betas_path = [data_path 'singleTrialROIData/wholeBrainUnsmoothed/'];
+
+
+% path for rois
+roi_path = [data_path sprintf('singleTrialGLMs/trials/sub%d/GLM_R1_trial1/',subj)];
+
+
+% load the data
+load([betas_path sprintf('sub%d-roidata.mat',subj)]);
+
+% get  brain mask in native brain space????
+native_maskV = spm_vol([roi_path 'mask.nii']);
+native_mask = spm_read_vols(native_maskV);
+
+
+
+%mean center on each run
+if subj == 1066 || subj == 1080
+    numBlocks=3; %scan runs
+    numTrials = 252;
+else
+    numBlocks = 4;
+    numTrials = 336;
+end
+j=0;
+for i = 1:numBlocks
+    indicesRun = [j*(numTrials/numBlocks)+1:numTrials/numBlocks*i];
+    trialByVoxel(indicesRun,:)=trialByVoxel(indicesRun,:)-mean(trialByVoxel(indicesRun,:));
+    j=j+1;
+end
+
+
+%make hypothesis RDMs
+%load([data_path sprintf('behavDataScanner/sortedData_subject%d_session2.mat',subj)]);
+subData=struct;
+if subj == 1066 || subj == 1080
+    subData=load([data_path sprintf('behavioralData/gridplanet_Scanning_subj_%d_block_3.mat',subj)]);
+else
+    subData=load([data_path sprintf('behavioralData/gridplanet_Scanning_subj_%d_block_4.mat',subj)]);
+end
+
+[T] = gridAnalysisFunction(subj,[1066,1080]);
+
+[R, exclude] = makeHypothesisRDM_gridCircularDistance_v3(T,subData,[],0,0);
+
+
+trialByVoxel = trialByVoxel(exclude==0,:);
+
+% mean position, color rule, angle change
+regressors = [ones(length(R.runRegressor),1), ...
+    R.runRegressor, R.blockRegressor, R.stateRegressor, ...
+    R.movementShieldRegressor,...
+    R.spatialMeanPositionRegressor, R.cogMeanPositionRegressor,...
+    R.colorLABRegressor,...
+    R.colorRegressor, R.colorWithinStateRegressor,...
+    R.startShieldRegressor, R.endShieldRegressor,...
+    R.transferTrialRegressor,R.angleChangeRegressor,...
+    R.lagRegressors(:,:,1),...
+    R.lagRegressors(:,:,2),R.lagRegressors(:,:,3),R.lagRegressors(:,:,4),...
+    R.lagRegressors(:,:,5),R.lagRegressors(:,:,6),R.lagRegressors(:,:,7),...
+    R.lagRegressors(:,:,8),R.lagRegressors(:,:,9),R.lagRegressors(:,:,10),...
+    R.lagRegressors(:,:,11),R.lagRegressors(:,:,12),R.lagRegressors(:,:,13),...
+    R.lagRegressors(:,:,14),R.lagRegressors(:,:,15),R.lagRegressors(:,:,16)];
+
+regname = {'intercept','runs','blocks', 'state' ...
+    'movementShield', ...
+    'spatialMeanPos','cogMeanPos','colorLAB',...
+    'color', 'colorWithinState', ...
+    'startShield','endShield',...
+    'transferTrial','angleChange',...
+    'lag1','lag2', 'lag3', 'lag4', ...
+    'lag5', 'lag6', 'lag7', 'lag8', 'lag9', 'lag10', 'lag11', 'lag12', 'lag13', ...
+    'lag14', 'lag15', 'lag16'};
+
+
+% ## SEARCHLIGHT CODE BEGINS HERE
+
+% specify brain dims
+xdim = 65;
+ydim = 77;
+zdim = 65;
+
+
+% initialize empty brain volumes for each of model regressors
+for n = 1:length(regname)
+    rbrains(n).B = zeros(xdim,ydim,zdim);
+end
+
+
+% create spherical multivariate searchlight - this bit of code is stolen from RSA
+% Toolbox directly
+% ss = step-size, vollim = minimum voxels for calculating a pearson
+vollim = 20;
+ss = 1;
+searchlightRad_mm = 9;
+voxSize_mm = [3,3,3];
+rad_vox=searchlightRad_mm./voxSize_mm;
+minMargin_vox=floor(rad_vox);
+[x,y,z]=meshgrid(-minMargin_vox(1):minMargin_vox(1),-minMargin_vox(2):minMargin_vox(2),-minMargin_vox(3):minMargin_vox(3));
+sphere=((x*voxSize_mm(1)).^2+(y*voxSize_mm(2)).^2+(z*voxSize_mm(3)).^2)<=(searchlightRad_mm^2);  % volume with sphere voxels marked 1 and the outside 0
+sphereSize_vox=[size(sphere),ones(1,3-ndims(sphere))]; % enforce 3D (matlab stupidly autosqueezes trailing singleton dimensions to 2D, try: ndims(ones(1,1,1)). )
+sphereLims = floor(sphereSize_vox/2);
+
+% initialize empty mask for adding to sphere
+emptymask = zeros(xdim,ydim,zdim);
+
+% get indicies for native mask
+native_mask_idx = find(native_mask);
+
+
+
+
+
+
+% now move the sphere around the brain
+for xi = 1:ss:xdim
+    for yi=1:ss:ydim
+        for zi=1:ss:zdim
+            %                 reset temp mask
+            masktemp=emptymask;
+            %                 get indecies for sphere
+            xid = xi-sphereLims(1):xi+sphereLims(1);
+            yid = yi-sphereLims(2):yi+sphereLims(2);
+            zid = zi-sphereLims(3):zi+sphereLims(3);
+            sphereTemp = sphere(xid > 0 & xid <= xdim,...
+                yid > 0 & yid <= ydim,...
+                zid > 0 & zid <= zdim);
+            xid = xid(xid > 0 & xid <= xdim);
+            yid = yid(yid > 0 & yid <= ydim);
+            zid = zid(zid > 0 & zid <= zdim);
+            
+            
+            %                 assign sphere to temp mask
+            masktemp(xid,yid,zid)=sphereTemp;
+            %                 mask the spot light with brain mask
+            masktemp = masktemp.*native_mask;
+            
+            %             if this is an empty set of voxels (no data) or there is less
+            %             data in the volume than some limit, then don't bother
+            if sum(masktemp(:)) < vollim
+                continue
+            end
+            
+            %             get the indicies of the voxels we are using
+            searchlightidx = find(masktemp);
+            %             make a logical vector that includes voxels we want to include in our searchlight
+            searchlightvox = sum([native_mask_idx == searchlightidx'],2)==1;
+            %             find any voxels that have nan's
+            nanvox = sum(isnan(trialByVoxel(:,searchlightvox)))>0;
+            %             remove these voxels from searchlight mask
+            %             searchlightvox
+            searchlightidx = searchlightidx(~nanvox);
+            
+            %             if we don't have any voxels any more or if we are under our
+            %             limit, than don't bother
+            if length(searchlightidx) < vollim
+                continue
+            end
+            
+            %             get searchlight voxels again now that we've taken out the
+            %             nans
+            searchlightvox = sum([native_mask_idx == searchlightidx'],2)==1;
+            
+            %             now, get the data from these voxels and calculate distance
+            d = pdist(trialByVoxel(:,searchlightvox),'correlation');
+            d = squareform(d);
+            
+            
+            % remove off-block stuff from distance measure
+            
+            mask=tril(true(size(d)),-1);
+            dVec=d(mask);
+           
+            
+            % regress predictors onto the data!
+            b = regress(dVec,regressors);
+           
+            %             loop through coefficients, multiply by them mask and add to
+            %             volumes
+            %             scale by 10^6 so that values aren't incredibly small
+            %if strcmp(condition, 'cued')
+            for k = 1:length(rbrains)-1
+                rbrains(k).B = rbrains(k).B + (masktemp.*b(k)*10^3);
+            end
+           
+            
+            %             also add to a volume that counts passes through each
+            %             voxel for use in calculating the means of these beta
+            %             coefficients at the end
+            rbrains(end).B = rbrains(end).B + masktemp;
+            
+        end
+    end
+end
+
+
+
+% %     get means for all beta coefficient maps  by dividing by the count of
+%       passes through each voxel
+for k = 1:length(rbrains)-1
+    rbrains(k).B = rbrains(k).B./rbrains(end).B;
+end
+
+
+
+% save the brains for each subject
+% use avolume that is in the same  space as the searchlight analysis
+outputV=native_maskV;
+outputV=rmfield(outputV,'pinfo');
+outputV.dt = [16,0];
+outputV.descrip = 'rsa_searchlight_betas';
+%     Specify where you want to save these data
+outputDir = [data_path sprintf('SearchLightMaps/trials/meanPosition_colorRule_transfer_angleChange_fullbatch')];
+mkdir(outputDir)
+
+
+%     Loop through the beta-coefficient maps and save to disk. also save
+%     the intercept and searchlight mask
+for k = 1:length(rbrains)
+    outputV.fname=sprintf('%s/%d_%s.nii',outputDir, subj, regname{k});
+    %         save the volumes
+    spm_write_vol(outputV,rbrains(k).B);
+end
+
+
+disp('jee')
